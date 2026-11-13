@@ -20,7 +20,7 @@ h1{font-size:20px;margin:0 0 4px}
 #drop.over{border-color:var(--ac)}
 #drop b{color:var(--tx)}
 #prev{display:flex;gap:8px;margin-top:10px}
-#prev img{max-width:48%;max-height:150px;border-radius:8px}
+.th{flex:1;max-width:48%}.th img{width:100%;max-height:150px;object-fit:contain;border-radius:8px;display:block}.th button{display:block;width:100%;margin-top:6px;padding:6px;font-size:14px;color:var(--er);border-color:var(--er)}
 button{font:inherit;border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:8px;padding:8px 12px;cursor:pointer}
 button.ok{border-color:var(--ok);color:var(--ok)}
 .row{display:flex;gap:8px;align-items:flex-end;margin-bottom:10px}
@@ -62,7 +62,7 @@ h2{font-size:15px;margin:0 0 10px}
 <div class="row"><div><label>MRZ (ID karta 90, pasport 88 belgi)</label><textarea id="mrz" rows="3" spellcheck="false"></textarea><div class="cnt" id="cnt">0/90</div></div><button data-c="mrz">Nusxa</button></div>
 <p id="chk" class="sub"></p>
 </div>
-<button id="clr">Tozalash</button>
+<button id="rescan">Qayta o’qish</button> <button id="clr">Tozalash</button>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
@@ -107,26 +107,159 @@ function apply(raw){
 mrz.addEventListener('input',function(){apply(mrz.value)});
 $('iss').addEventListener('input',function(){delete $('iss').dataset.est});
 
-/* ---- MRZ tuzatish ---- */
-function num(s){return s.replace(/[OQD]/g,'0').replace(/[IL]/g,'1').replace(/B/g,'8').replace(/S/g,'5').replace(/Z/g,'2').replace(/G/g,'6')}
-function fix(l,ranges){var a=l.split('');ranges.forEach(function(r){for(var i=r[0];i<=r[1]&&i<a.length;i++)a[i]=num(a[i])});return a.join('')}
-function fixName(l,n){
-  l=l.replace(/0/g,'O').replace(/1/g,'I').replace(/5/g,'S').replace(/8/g,'B');
-  l=l.replace(/[KCLEFX]{3,}$/,function(m){return new Array(m.length+1).join('<')});
-  var core=l.replace(/<+$/,'');
-  if(core.indexOf('<<')<0){var m=/^(.{2,}?)[KCLE]{2}(.+)$/.exec(core);if(m)core=m[1]+'<<'+m[2]}
-  return fit(core,n);
+/* MRZ ni tekshirish va tuzatish (bot bilan bir xil mantiq) */
+var TD={O:'0',Q:'0',D:'0',I:'1',L:'1',B:'8',S:'5',Z:'2',G:'6'},TL={'0':'O','1':'I','5':'S','8':'B','2':'Z','6':'G'};
+var ALT={'0':'86','1':'7','2':'7','3':'8','4':'9','5':'6','6':'58','7':'12','8':'03','9':'4'};
+function cdg(s){var w=[7,3,1],t=0;for(var i=0;i<s.length;i++){var c=s[i],v=(c>='0'&&c<='9')?+c:((c>='A'&&c<='Z')?c.charCodeAt(0)-55:0);t+=v*w[i%3]}return String(t%10)}
+function toD(s){return s.toUpperCase().split('').map(function(c){return TD[c]||c}).join('')}
+function toL(s){return s.toUpperCase().split('').map(function(c){return TL[c]||c}).join('')}
+function dKeep(s){return s.split('').map(function(c){return c==='<'?c:toD(c)}).join('')}
+function rep(n){return n>0?new Array(n+1).join('<'):''}
+function fit(s,n){return s.length>=n?s.slice(0,n):s+rep(n-s.length)}
+function refit(s,n){
+  if(s.length===n)return s;
+  var re=/<+/g,m,best=null;
+  while((m=re.exec(s))){if(!best||m[0].length>=best[0])best=[m[0].length,m.index]}
+  if(!best)return fit(s,n);
+  var nw=best[0]+n-s.length;if(nw<0)return fit(s,n);
+  return s.slice(0,best[1])+rep(nw)+s.slice(best[1]+best[0]);
 }
-function fit(l,n){return l.length>n?l.slice(0,n):l+new Array(n-l.length+1).join('<')}
-function findMrz(text){
-  var L=text.split('\n').map(function(x){return x.replace(/[^A-Z0-9<]/g,'')}).filter(function(x){return x.length>=20&&(x.indexOf('<')>=0||/[KCLE]{3,}$/.test(x))});
-  var id=L.filter(function(x){return x.length>=27&&x.length<=33}),pp=L.filter(function(x){return x.length>=41&&x.length<=47});
-  if(id.length>=3){var t=id.slice(-3).map(function(x){return fit(x,30)});
-    return fix(t[0],[[7,14]])+fix(t[1],[[0,6],[8,14],[29,29]])+fixName(t[2],30)}
-  if(pp.length>=2){var t=pp.slice(-2).map(function(x){return fit(x,44)});
-    return t[0].slice(0,5)+fixName(t[0].slice(5),39)+fix(t[1],[[2,9],[13,19],[21,27]])}
+function cleanLine(s){return (s||'').toUpperCase().replace(/«/g,'<<').replace(/[^A-Z0-9<]/g,'')}
+function splitMrz(raw){
+  if(typeof raw==='string')raw=raw.split(/[\n|]+/);
+  var L=(raw||[]).map(cleanLine).filter(function(x){return x});
+  if(L.length===1){var s=L[0];
+    if(s.length===88||(s[0]==='P'&&s.length>=84&&s.length<=92))L=[s.slice(0,44),s.slice(44,88)];
+    else if(s.length>=84)L=[s.slice(0,30),s.slice(30,60),s.slice(60,90)]}
+  var in1=function(x,a,b){return x.length>=a&&x.length<=b};
+  if(L.length>=3&&in1(L[0],24,36)&&in1(L[1],24,36)&&in1(L[2],5,36))return['id',L.slice(0,3).map(function(x){return refit(x,30)})];
+  if(L.length>=2&&in1(L[0],38,50)&&in1(L[1],38,50))return['passport',L.slice(0,2).map(function(x){return refit(x,44)})];
+  return[null,[]];
+}
+function mkDate(y,m,d){var x=new Date(Date.UTC(y,m-1,d));return(x.getUTCFullYear()===y&&x.getUTCMonth()===m-1&&x.getUTCDate()===d)?x:null}
+function pDate(s){var m=/(\d{1,2})\D+(\d{1,2})\D+(\d{4})/.exec(s||'');return m?mkDate(+m[3],+m[2],+m[1]):null}
+function p2(n){return(n<10?'0':'')+n}
+function fDate(d){return p2(d.getUTCDate())+'-'+p2(d.getUTCMonth()+1)+'-'+d.getUTCFullYear()}
+function ymdS(d){return p2(d.getUTCFullYear()%100)+p2(d.getUTCMonth()+1)+p2(d.getUTCDate())}
+function fromYmd(s,birth,today){
+  if(!/^\d{6}$/.test(s))return null;
+  var y=+s.slice(0,2),yy=(today||new Date()).getUTCFullYear()%100;y+=(birth&&y>yy)?1900:2000;
+  return mkDate(y,+s.slice(2,4),+s.slice(4,6));
+}
+function yearsBack(d,n){return mkDate(d.getUTCFullYear()-n,d.getUTCMonth()+1,d.getUTCDate())||mkDate(d.getUTCFullYear()-n,d.getUTCMonth()+1,28)}
+function variants(s,start){var o=[s];for(var i=start||0;i<s.length;i++){var a=ALT[s[i]]||'';for(var k=0;k<a.length;k++)o.push(s.slice(0,i)+a[k]+s.slice(i+1))}return o}
+function choose(c,chk){for(var i=0;i<c.length;i++)if(c[i]&&cdg(c[i])===chk)return c[i];return null}
+function guess(raw,chk,start,isDate){
+  var f=variants(raw,start).filter(function(v){return v!==raw&&cdg(v)===chk&&(!isDate||fromYmd(v,false))});
+  return f.length===1?f[0]:null;
+}
+function docNorm(s){s=fit(cleanLine(s),9);return toL(s.slice(0,2))+dKeep(s.slice(2))}
+function cleanName(s){return (s||'').toUpperCase().replace(/[`’‘ʻʼ´]/g,"'").replace(/[^A-Z' -]/g,' ').replace(/\s+/g,' ').trim()}
+function bare(s){return s.replace(/[^A-Z ]/g,'')}
+function lev(a,b){var p=[],i,j;for(j=0;j<=b.length;j++)p.push(j);
+  for(i=1;i<=a.length;i++){var q=[i];for(j=1;j<=b.length;j++)q.push(Math.min(p[j]+1,q[j-1]+1,p[j-1]+(a[i-1]!==b[j-1]?1:0)));p=q}return p[b.length]}
+function nameLine(sur,giv,n){return fit(sur.replace(/ /g,'<')+'<<'+giv.replace(/ /g,'<'),n)}
+function splitName(f){
+  var core=toL(f.replace(/<+$/,'')).replace(/[^A-Z<]/g,''),i=core.indexOf('<<');
+  if(i>=0)return[core.slice(0,i).replace(/</g,' ').trim(),core.slice(i+2).replace(/<+/g,' ').trim(),true];
+  return[core.replace(/</g,' ').trim(),'',false];
+}
+function pickName(front,m){
+  if(!front)return[m,false];
+  if(bare(front)===m)return[m,false];
+  var pure=front===bare(front);
+  if(!m||(pure&&front.split(' ').length===m.split(' ').length&&lev(front,m)<=2))return[bare(front),!!m];
+  return[m,true];
+}
+function reconcile(fr,rawMrz,today){
+  fr=fr||{};var warns=[],sm=splitMrz(rawMrz),kind=sm[0],L=sm[1];
+  var res={kind:kind,surname:cleanName(fr.surname),name:cleanName(fr.name),patronymic:cleanName(fr.patronymic),birth:'',expiry:'',issue:'',docno:'',pinfl:'',mrz:'',issueEstimated:false,mismatch:false};
+  var fb=pDate(fr.birth),fe=pDate(fr.expiry),fi=pDate(fr.issue);
+  var fdoc=fr.docno?docNorm(fr.docno):'';if(fdoc&&!/^[A-Z]{2}\d{7}$/.test(fdoc))fdoc='';
+  var fpin=(fr.pinfl||'').replace(/\D/g,'');if(fpin.length!==14)fpin='';
+  res.pinfl=fpin;
+  if(!kind){
+    res.birth=fb?fDate(fb):'';res.expiry=fe?fDate(fe):'';res.issue=fi?fDate(fi):'';res.docno=fdoc?fdoc.slice(0,2)+' '+fdoc.slice(2):'';
+    warns.push('MRZ o’qilmadi. MRZ qatorlari aniq ko’ringan rasm kerak.');res.warnings=warns;return res;
+  }
+  var L1=L[0],L2=L[1],head,docR,cdD,bR,cdB,sex,eR,cdE,nat,compR,names;
+  if(kind==='id'){
+    head=toL(L1.slice(0,5));docR=docNorm(L1.slice(5,14));cdD=toD(L1[14]);
+    bR=toD(L2.slice(0,6));cdB=toD(L2[6]);sex=L2[7];eR=toD(L2.slice(8,14));cdE=toD(L2[14]);
+    nat=toL(L2.slice(15,18));compR=toD(L2[29]);names=L[2];
+  }else{
+    head=toL(L1.slice(0,5));docR=docNorm(L2.slice(0,9));cdD=toD(L2[9]);nat=toL(L2.slice(10,13));
+    bR=toD(L2.slice(13,19));cdB=toD(L2[19]);sex=L2[20];eR=toD(L2.slice(21,27));cdE=toD(L2[27]);
+    compR=toD(L2[43]);names=L1.slice(5);
+  }
+  sex=({H:'M',N:'M',E:'F',P:'F'})[sex]||sex;if(sex!=='M'&&sex!=='F')sex='<';
+  var g,doc=choose([docR,fdoc],cdD);
+  if(doc&&fdoc&&doc!==fdoc&&lev(doc,fdoc)>2){res.mismatch=true;warns.push('Old tomondagi hujjat raqami ('+fdoc+') MRZ dagidan ('+doc+') farq qiladi — rasmlar turli hujjatniki bo’lishi mumkin.')}
+  if(!doc){if(fdoc&&fdoc===docR)doc=docR;else{g=fdoc?null:guess(docR,cdD,2);doc=fdoc||g||docR;warns.push('Hujjat raqami nazorat raqamiga mos kelmadi'+(fdoc?', old tomondan olindi':g?', taxminan tuzatildi':'')+' — rasm bilan solishtiring.')}}
+  var fbs=fb?ymdS(fb):'',fes=fe?ymdS(fe):'';
+  var bs=choose([bR,fbs],cdB);
+  if(!bs){if(fbs&&fbs===bR)bs=bR;else{g=fbs?null:guess(bR,cdB,0,true);bs=fbs||g||bR;warns.push('Tug’ilgan sana MRZ nazorat raqamiga mos kelmadi'+(fbs?', old tomondan olindi':g?', taxminan tuzatildi':'')+' — rasm bilan solishtiring.')}}
+  else if(fbs&&fbs!==bs)warns.push('Tug’ilgan sana old tomonda boshqacha o’qildi ('+fDate(fb)+'), MRZ bo’yicha olindi.');
+  var es=choose([eR,fes],cdE);
+  if(!es){if(fes&&fes===eR)es=eR;else{g=fes?null:guess(eR,cdE,0,true);es=fes||g||eR;warns.push('Amal qilish muddati MRZ nazorat raqamiga mos kelmadi'+(fes?', old tomondan olindi':g?', taxminan tuzatildi':'')+' — rasm bilan solishtiring.')}}
+  else if(fes&&fes!==es)warns.push('Amal qilish muddati old tomonda boshqacha o’qildi ('+fDate(fe)+'), MRZ bo’yicha olindi.');
+
+  var sn=splitName(names),surR=sn[0],givR=sn[1],hasSep=sn[2],fs=bare(res.surname);
+  if(!hasSep&&fs&&surR.indexOf(fs+' ')===0){givR=surR.slice(fs.length+1);surR=fs;hasSep=true}
+  var a=pickName(res.surname,surR),b=pickName(res.name,givR),surM=a[0],givM=b[0];
+  if(a[1]||b[1])warns.push('Ism-familiya old tomonda “'+res.surname+' '+res.name+'”, MRZ da “'+surR+' '+givR+'” o’qildi — MRZ ning ism qismini tekshiring.');
+  else if(!hasSep&&!(res.surname&&res.name))warns.push('MRZ dagi ism qatori noaniq, tekshiring.');
+  res.surname=res.surname||surM;res.name=res.name||givM;
+
+  var mrz,pinSrc,l1,l2,comp,ok,i;
+  if(kind==='id'){
+    var opt1=L1.slice(15,30),opt2=L2.slice(18,29),cands=[dKeep(opt1),opt1];
+    if(fpin){var mm=/[0-9OQDILBSZG]{12,}/.exec(opt1);if(mm)cands.push(fit(opt1.slice(0,mm.index)+fpin+opt1.slice(mm.index+14),15))}
+    l2=bs+cdg(bs)+sex+es+cdg(es)+nat+opt2;ok=false;
+    for(i=0;i<cands.length;i++){
+      var t=head+doc+cdg(doc)+cands[i],c=cdg(t.slice(5,30)+l2.slice(0,7)+l2.slice(8,15)+l2.slice(18,29));
+      if(c===compR){l1=t;comp=c;ok=true;break}
+      if(!l1){l1=t;comp=compR}
+    }
+    if(!ok)warns.push('MRZ umumiy nazorat raqami mos kelmadi — 1-qatorning oxirgi qismini tekshiring.');
+    mrz=l1+l2+comp+nameLine(surM,givM,30);pinSrc=l1.slice(15,30);
+  }else{
+    var pers=L2.slice(28,42),cdP=toD(L2[42]),pd=dKeep(pers),pc=choose([pd,pers,fpin],cdP);
+    ok=!!pc;if(!ok&&pers.replace(/</g,'')===''){pc=pers;ok=true}
+    var pf=ok?pc:pd;
+    l2=doc+cdg(doc)+nat+bs+cdg(bs)+sex+es+cdg(es)+pf+(/\d/.test(cdP)?cdP:L2[42]);
+    comp=cdg(l2.slice(0,10)+l2.slice(13,20)+l2.slice(21,43));
+    if(comp!==compR||!ok){warns.push('MRZ umumiy nazorat raqami mos kelmadi — 2-qatorning oxirgi qismini tekshiring.');comp=compR}
+    mrz=head+nameLine(surM,givM,39)+l2+comp;pinSrc=pf;
+  }
+  res.mrz=mrz;
+  var bd=fromYmd(bs,true,today),ed=fromYmd(es,false,today);
+  res.birth=bd?fDate(bd):'';res.expiry=ed?fDate(ed):'';
+  res.docno=doc.slice(0,2)+' '+doc.slice(2).replace(/</g,'');
+  var pm=/\d{14}/.exec(pinSrc);
+  if(pm&&fpin&&pm[0]!==fpin)warns.push('JSHSHIR old tomonda '+fpin+', MRZ da '+pm[0]+' o’qildi — tekshiring.');
+  if(pm)res.pinfl=pm[0];
+  if(fi&&ed&&fi<ed)res.issue=fDate(fi);
+  else if(ed){res.issue=fDate(yearsBack(new Date(ed.getTime()+864e5),10));res.issueEstimated=true;warns.push('Berilgan sana rasmdan o’qilmadi, amal qilish muddatidan hisoblandi (taxminiy).')}
+  res.warnings=warns;return res;
+}
+
+/* ---- OCR matnidan MRZ qatorlarini topish ---- */
+function fillers(l){
+  l=l.replace(/[KCLEFX]{3,}$/,function(m){return rep(m.length)});
+  var c=l.replace(/<+$/,'');
+  if(c.indexOf('<<')<0){var m=/^([A-Z]{2,}?)[KCLE]{2}([A-Z]{2,})$/.exec(c);if(m)l=m[1]+'<<'+m[2]}
+  return l;
+}
+function findLines(text){
+  var L=text.split('\n').map(function(x){return x.replace(/[^A-Z0-9<]/g,'')}).filter(function(x){return x.length>=18&&(x.indexOf('<')>=0||/[KCLE]{3,}$/.test(x)||x.replace(/\D/g,'').length>=8)});
+  var id=L.filter(function(x){return x.length>=24&&x.length<=36}),pp=L.filter(function(x){return x.length>=38&&x.length<=50});
+  if(pp.length>=2){var t=pp.slice(-2);return[t[0].slice(0,5)+fillers(t[0].slice(5)),t[1]]}
+  var tail=function(l){return l.replace(/(\d)([KCLE]+)$/,function(m,d,k){return d+rep(k.length)})};
+  if(id.length>=3){var u=id.slice(-3);return[tail(u[0]),u[1],fillers(u[2])]}
   return null;
 }
+function score(lines){var r=reconcile({},lines);return r.kind?10-r.warnings.length:-1}
 
 /* ---- rasm va OCR ---- */
 async function prep(blob,frac){
@@ -147,39 +280,70 @@ async function getWorker(){
     else if(m.status&&m.status.indexOf('load')===0)say('Dastur yuklanmoqda (birinchi marta bir necha daqiqa)...')}});
   return worker;
 }
-async function addAll(fs){
+function clearFields(){document.querySelectorAll('input:not([type=file]),textarea').forEach(function(i){i.value=''});delete $('iss').dataset.est;$('chk').textContent='';counter()}
+function renderPrev(){
+  var p=$('prev');p.innerHTML='';
+  imgs.forEach(function(f,i){
+    var w=document.createElement('div');w.className='th';
+    var im=document.createElement('img');im.src=f._u||(f._u=URL.createObjectURL(f));
+    var x=document.createElement('button');x.textContent='✕ Rasmni o’chirish';
+    x.onclick=function(){imgs.splice(i,1);renderPrev();clearFields();if(imgs.length)scan();else say('Rasm o’chirildi. Yangisini tashlang.')};
+    w.appendChild(im);w.appendChild(x);p.appendChild(w);
+  });
+}
+function addAll(fs){
   fs=[].slice.call(fs).slice(0,2);
-  if(imgs.length+fs.length>2){imgs=[];$('prev').innerHTML=''}
-  fs.forEach(function(f){imgs.push(f);var im=document.createElement('img');im.src=URL.createObjectURL(f);$('prev').appendChild(im)});
+  if(imgs.length+fs.length>2){imgs=[];clearFields()}
+  fs.forEach(function(f){imgs.push(f)});renderPrev();
   if(imgs.length)scan();
 }
-var busy=false;
+function fill(r){
+  clearFields();
+  $('pas').value=r.docno;$('pinfl').value=r.pinfl;$('sur').value=r.surname;$('nam').value=r.name;
+  $('iss').value=r.issue;$('exp').value=r.expiry;$('bir').value=r.birth;mrz.value=r.mrz;counter();
+  if(r.issueEstimated)$('iss').dataset.est=1;
+  var c=$('chk');c.textContent='';
+  if(!r.warnings.length){var s=document.createElement('span');s.className='g';s.textContent='MRZ nazorat raqamlari to’g’ri.';c.appendChild(s)}
+  r.warnings.forEach(function(w){var s=document.createElement('span');s.className='r';s.style.display='block';s.textContent='⚠ '+w;c.appendChild(s)});
+}
+var busy=false,again=false;
 async function scan(){
-  if(busy){say('Oldingi o’qish tugashini kuting.','r');return}
-  busy=true;
+  if(busy){again=true;return}
+  busy=true;again=false;
   try{
-    var w=await getWorker(),found=null,front='';
-    for(var i=0;i<imgs.length;i++){
+    var w=await getWorker(),best=null,bs=-1,front='',list=imgs.slice();
+    for(var i=0;i<list.length;i++){
       await w.setParameters({tessedit_char_whitelist:'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<',tessedit_pageseg_mode:'6'});
-      say('MRZ qidirilmoqda ('+(i+1)+'/'+imgs.length+')...');
-      var m=findMrz((await w.recognize(await prep(imgs[i],.45))).data.text);
-      if(!m)m=findMrz((await w.recognize(await prep(imgs[i],1))).data.text);
-      if(m&&!found)found=m;
+      var fr=[.45,1,.3];
+      for(var k=0;k<fr.length&&bs<10;k++){
+        say('MRZ qidirilmoqda ('+(i+1)+'/'+list.length+')...');
+        var m=findLines((await w.recognize(await prep(list[i],fr[k]))).data.text);
+        if(m){var sc=score(m);if(sc>bs){bs=sc;best=m}}
+      }
       await w.setParameters({tessedit_char_whitelist:'',tessedit_pageseg_mode:'3'});
-      say('Matn o’qilmoqda ('+(i+1)+'/'+imgs.length+')...');
-      front+='\n'+(await w.recognize(await prep(imgs[i],1))).data.text;
+      say('Matn o’qilmoqda ('+(i+1)+'/'+list.length+')...');
+      front+='\n'+(await w.recognize(await prep(list[i],1))).data.text;
     }
-    if(!found){say('MRZ topilmadi. ID kartaning orqa tomonini (pastki 3 qator) yoki pasport pastini to’g’ri, yorug’ olib qayta tashlang. Yoki MRZ ni qo’lda yozing.','r');busy=false;return}
-    mrz.value=found;var ok=apply(found),p=parse(found);
-    var re=/(\d{2})[.\-\/ ](\d{2})[.\-\/ ](\d{4})/g,t;
-    while((t=re.exec(front))){
-      var d=new Date(Date.UTC(+t[3],+t[2]-1,+t[1])),e=new Date(p.exp.getTime());e.setUTCFullYear(e.getUTCFullYear()-10);
-      if(Math.abs(d-e)<=36*864e5&&d<p.exp&&d.getTime()!==p.bir.getTime()){$('iss').value=fmt(d);delete $('iss').dataset.est;apply(mrz.value);break}
+    if(again){busy=false;return scan()}
+    if(!best){say('MRZ topilmadi. ID kartaning orqa tomonini (pastki 3 qator) yoki pasport pastini to’g’ri, yorug’ olib qayta tashlang. Yoki MRZ ni qo’lda yozing.','r');busy=false;return}
+    var r=reconcile({},best),f={},re=/(\d{2})[.\-\/ ](\d{2})[.\-\/ ](\d{4})/g,t,ex=pDate(r.expiry),bi=pDate(r.birth);
+    while(ex&&(t=re.exec(front))){
+      var d=mkDate(+t[3],+t[2],+t[1]);
+      if(d&&d<ex&&(!bi||d.getTime()!==bi.getTime())&&Math.abs(d-yearsBack(ex,10))<=40*864e5){f.issue=t[1]+'.'+t[2]+'.'+t[3];break}
     }
-    if(!$('pinfl').value){var q=/\d{14}/.exec(front);if(q)$('pinfl').value=q[0]}
-    say(ok?'Tayyor. Ma’lumotlarni tekshirib, nusxa oling.':'Tayyor, lekin MRZ ni tekshiring.',ok?'g':'r');
+    if(!r.pinfl){var q=/\d{14}/.exec(front);if(q)f.pinfl=q[0]}
+    if(f.issue||f.pinfl)r=reconcile(f,best);
+    // old tomondagi sanalar MRZ dagi xatoni tuzatishga yordam beradimi — sinab ko'ramiz
+    var ds=front.match(/\d{2}[.\-\/ ]\d{2}[.\-\/ ]\d{4}/g)||[];
+    ['birth','expiry'].forEach(function(key){ds.forEach(function(d){
+      var g={};for(var z in f)g[z]=f[z];g[key]=d;var r2=reconcile(g,best);
+      if(r2.warnings.length<r.warnings.length){r=r2;f=g}
+    })});
+    fill(r);
+    say(r.warnings.length?'Tayyor, lekin pastdagi ogohlantirishlarni tekshiring.':'Tayyor. Ma’lumotlarni tekshirib, nusxa oling.',r.warnings.length?'r':'g');
   }catch(e){say('O’qib bo’lmadi: '+(e&&e.message||e)+'. Internetni tekshiring (birinchi marta kerak).','r')}
   busy=false;
+  if(again)scan();
 }
 
 var file=$('file'),drop=$('drop');
@@ -200,10 +364,8 @@ document.querySelectorAll('button[data-c]').forEach(function(b){
     catch(x){$(b.dataset.c).select();document.execCommand('copy');done()}
   }
 });
-$('clr').onclick=function(){
-  document.querySelectorAll('input:not([type=file]),textarea').forEach(function(i){i.value=''});
-  delete $('iss').dataset.est;$('prev').innerHTML='';imgs=[];$('chk').textContent='';counter();say('');
-};
+$('clr').onclick=function(){imgs=[];renderPrev();clearFields();say('')};
+$('rescan').onclick=function(){if(imgs.length){clearFields();scan()}else say('Avval rasm tashlang.','r')};
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(function(){});
 })();
 </script>
