@@ -124,6 +124,24 @@ function refit(s,n){
   var nw=best[0]+n-s.length;if(nw<0)return fit(s,n);
   return s.slice(0,best[1])+rep(nw)+s.slice(best[1]+best[0]);
 }
+function align(line,pos,n){   // 'UZB' o'z joyida turishi kerak; siljigan bo'lsa qator suriladi
+  var re=/[UV0O][Z2][B8]|UZ.|U.B|.ZB/,best=-1,i;
+  for(i=Math.max(0,pos-2);i<=pos+2&&i+3<=line.length;i++){if(re.test(line.substr(i,3))){if(i===pos)return refit(line,n);if(best<0||Math.abs(i-pos)<Math.abs(best-pos))best=i}}
+  if(best<0)return refit(line,n);
+  return fit(best<pos?rep(pos-best)+line:line.slice(best-pos),n);
+}
+function solve(raw,chk,letters){   // bitta o'qilmagan belgini nazorat raqami bilan topish
+  var bad=[],i,o=[];letters=letters||0;
+  for(i=0;i<raw.length;i++){var c=raw[i];if(!(i<letters?(c>='A'&&c<='Z'):(c>='0'&&c<='9')))bad.push(i)}
+  if(bad.length!==1||!/^\d$/.test(chk))return o;
+  i=bad[0];var al=i<letters?'AFKBCDEGHIJLMNOPQRSTUVWXYZ':'0123456789';
+  for(var k=0;k<al.length;k++){var t=raw.slice(0,i)+al[k]+raw.slice(i+1);if(cdg(t)===chk)o.push(t)}
+  return o;
+}
+function pinInfo(pin){   // JSHSHIR: 1-raqam jins/asr, keyingi 6 tasi KKOOYY
+  if(!/^\d{14}$/.test(pin||''))return['',''];
+  return[pin.slice(5,7)+pin.slice(3,5)+pin.slice(1,3),({'3':'M','5':'M','4':'F','6':'F'})[pin[0]]||''];
+}
 function cleanLine(s){return (s||'').toUpperCase().replace(/«/g,'<<').replace(/[^A-Z0-9<]/g,'')}
 function splitMrz(raw){
   if(typeof raw==='string')raw=raw.split(/[\n|]+/);
@@ -132,8 +150,8 @@ function splitMrz(raw){
     if(s.length===88||(s[0]==='P'&&s.length>=84&&s.length<=92))L=[s.slice(0,44),s.slice(44,88)];
     else if(s.length>=84)L=[s.slice(0,30),s.slice(30,60),s.slice(60,90)]}
   var in1=function(x,a,b){return x.length>=a&&x.length<=b};
-  if(L.length>=3&&in1(L[0],24,36)&&in1(L[1],24,36)&&in1(L[2],5,36))return['id',L.slice(0,3).map(function(x){return refit(x,30)})];
-  if(L.length>=2&&in1(L[0],38,50)&&in1(L[1],38,50))return['passport',L.slice(0,2).map(function(x){return refit(x,44)})];
+  if(L.length>=3&&in1(L[0],24,36)&&in1(L[1],24,36)&&in1(L[2],5,36))return['id',[align(L[0],2,30),align(L[1],15,30),refit(L[2],30)]];
+  if(L.length>=2&&in1(L[0],38,50)&&in1(L[1],38,50))return['passport',[refit(L[0],44),align(L[1],10,44)]];
   return[null,[]];
 }
 function mkDate(y,m,d){var x=new Date(Date.UTC(y,m-1,d));return(x.getUTCFullYear()===y&&x.getUTCMonth()===m-1&&x.getUTCDate()===d)?x:null}
@@ -197,14 +215,18 @@ function reconcile(fr,rawMrz,today){
   if(lev(head.slice(2,5),'UZB')<=1)head=head.slice(0,2)+'UZB';
   if(kind==='passport'&&head[0]==='P')head='P<'+head.slice(2);
   sex=({H:'M',N:'M',E:'F',P:'F'})[sex]||sex;if(sex!=='M'&&sex!=='F')sex='<';
-  var g,doc=choose([docR,fdoc],cdD);
+  var pinR=dKeep(kind==='id'?L1.slice(15,29):L2.slice(28,42)),pI=pinInfo(/^\d+$/.test(pinR)?pinR:fpin),pinB=pI[0];
+  if(sex==='<'&&pI[1])sex=pI[1];
+  var isdoc=function(x){return /^[A-Z]{2}\d{7}$/.test(x||'')},g,doc=choose([docR,fdoc].filter(isdoc),cdD);
+  if(!doc&&!fdoc){var sv=solve(docR,cdD,2);
+    if(sv.length){doc=sv[0];if(sv.length>1)warns.push('Hujjat seriyasidagi bir harf o’qilmadi, nazorat raqami bo’yicha '+doc.slice(0,2)+' deb olindi ('+sv.slice(1).map(function(x){return x.slice(0,2)}).join(', ')+' ham bo’lishi mumkin) — tekshiring.')}}
   if(doc&&fdoc&&doc!==fdoc&&lev(doc,fdoc)>2){res.mismatch=true;warns.push('Old tomondagi hujjat raqami ('+fdoc+') MRZ dagidan ('+doc+') farq qiladi — rasmlar turli hujjatniki bo’lishi mumkin.')}
   if(!doc){if(fdoc&&fdoc===docR)doc=docR;else{g=fdoc?null:guess(docR,cdD,2);doc=fdoc||g||docR;warns.push('Hujjat raqami nazorat raqamiga mos kelmadi'+(fdoc?', old tomondan olindi':g?', taxminan tuzatildi':'')+' — rasm bilan solishtiring.')}}
   var fbs=fb?ymdS(fb):'',fes=fe?ymdS(fe):'';
-  var bs=choose([bR,fbs],cdB);
+  var bs=choose([bR,fbs,pinB].concat(solve(bR,cdB)),cdB);
   if(!bs){if(fbs&&fbs===bR)bs=bR;else{g=fbs?null:guess(bR,cdB,0,true);bs=fbs||g||bR;warns.push('Tug’ilgan sana MRZ nazorat raqamiga mos kelmadi'+(fbs?', old tomondan olindi':g?', taxminan tuzatildi':'')+' — rasm bilan solishtiring.')}}
   else if(fbs&&fbs!==bs)warns.push('Tug’ilgan sana old tomonda boshqacha o’qildi ('+fDate(fb)+'), MRZ bo’yicha olindi.');
-  var es=choose([eR,fes],cdE);
+  var es=choose([eR,fes].concat(solve(eR,cdE)),cdE);
   if(!es){if(fes&&fes===eR)es=eR;else{g=fes?null:guess(eR,cdE,0,true);es=fes||g||eR;warns.push('Amal qilish muddati MRZ nazorat raqamiga mos kelmadi'+(fes?', old tomondan olindi':g?', taxminan tuzatildi':'')+' — rasm bilan solishtiring.')}}
   else if(fes&&fes!==es)warns.push('Amal qilish muddati old tomonda boshqacha o’qildi ('+fDate(fe)+'), MRZ bo’yicha olindi.');
 
@@ -258,6 +280,7 @@ function reconcile(fr,rawMrz,today){
 function fillers(l){
   l=l.replace(/[KCLEFX]{3,}$/,function(m){return rep(m.length)});
   l=l.replace(/(<<<)[OKC0]{1,2}(?=<|$)/g,function(m,a){return a+rep(m.length-3)});
+  l=l.replace(/<[KCLOE0]{1,2}(?=<{4,}$)/,function(m){return rep(m.length)});   // ISM<K<<<<<< — yolg'iz harf aslida '<'
   var c=l.replace(/<+$/,'');
   if(c.indexOf('<<')<0){var m=/^([A-Z]{2,}?)[KCLE]{2}([A-Z]{2,})$/.exec(c);if(m)l=m[1]+'<<'+m[2]}
   return l;
@@ -357,7 +380,7 @@ function stretch(cv){
   x.putImageData(im,0,0);return cv;
 }
 function cropCand(src,c,flip,outw){
-  var d=dirOf(c,flip),dx=d[0],dy=d[1],nx=-dy,ny=dx,w=c.w*1.08,h=c.h+.24*c.w,s=outw/w,ow=Math.round(outw),oh=Math.round(h*s);
+  var d=dirOf(c,flip),dx=d[0],dy=d[1],nx=-dy,ny=dx,w=c.w*1.14,h=c.h+.24*c.w,s=outw/w,ow=Math.round(outw),oh=Math.round(h*s);
   var cv=mkCanvas(ow,oh),x=cv.getContext('2d',{willReadFrequently:true});
   x.fillStyle='#fff';x.fillRect(0,0,ow,oh);x.imageSmoothingQuality='high';
   x.setTransform(s*dx,s*nx,s*dy,s*ny,ow/2-s*(c.x*dx+c.y*dy),oh/2-s*(c.x*nx+c.y*ny));
